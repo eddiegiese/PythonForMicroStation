@@ -1,0 +1,5 @@
+interface:
+  display_name: "MicroStation Python Expert"
+  short_description: "Develop, debug, and refactor MicroStation Python scripts with expert-level guidance."
+policy:
+  allow_implicit_invocation: true
