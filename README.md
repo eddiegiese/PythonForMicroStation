@@ -24,4 +24,4 @@ This skill for Claude, ChatGPT, etc. provides deep instructions for development 
 7. Deployment instructions
 8. Logging guidance (places a `.log` file for each version in `%TEMP%`)
 
-Review the SKILL.md and make organization-specific changes as necessary. 
+Review the SKILL.md and make organization-specific changes as necessary. A `.yaml` file is included under an `agents` subfolder for use with OpenAI.  
