@@ -13,6 +13,9 @@ Tools can be initiated via the **Python Manager** tool within MicroStation or vi
 This is a UI-based script that relies on `MSPy` and `tkinter` libraries. 
 The tool allows the user to select a "source" element from which to inherit Item Types, Item Type properties, and their values. This information is then displayed in the UI. The user can then assign the full extent of all Item Types from the source element to one or more "target" elements. This functionality is non-native to MicroStation, but highly desired when working with Item Types. 
 
+![Item Type Painter Screenshot](./assets/ItemTypePainter.png)
+
+![Item Type Painter Example Workflow](./assets/Demo_ItemTypePainter.gif)
 
 
 ## AI Skill: microstation-python-expert
