@@ -1,5 +1,5 @@
 # PythonForMicroStation
-Tools for MicroStation built in Python. Works in version 2024 and later. Some OpenX products support Python usage. Refer to Bentley documentation for more information. 
+Tools for MicroStation built in Python. Works in version 2024 and later. Some OpenX products support Python usage. Refer to [Bentley documentation](https://docs.bentley.com/LiveContent/index.html) for more information. 
 
 I welcome any additional tools/scripts so we can make these products better!
 
@@ -12,6 +12,8 @@ Tools can be initiated via the **Python Manager** tool within MicroStation or vi
 ### Item Type Painter
 This is a UI-based script that relies on `MSPy` and `tkinter` libraries. 
 The tool allows the user to select a "source" element from which to inherit Item Types, Item Type properties, and their values. This information is then displayed in the UI. The user can then assign the full extent of all Item Types from the source element to one or more "target" elements. This functionality is non-native to MicroStation, but highly desired when working with Item Types. 
+
+
 
 ## AI Skill: microstation-python-expert
 This skill for Claude, ChatGPT, etc. provides deep instructions for development and handling of Python for MicroStation when vibe-coding. Key highlights include:
