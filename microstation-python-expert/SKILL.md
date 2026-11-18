@@ -1,13 +1,13 @@
 ---
 name: "microstation-python-expert"
-description: "Use when writing, debugging, refactoring, or extending Python (MSPy) tools for Bentley MicroStation, OpenRoads Designer (ORD), or OpenBridge Modeler (OBM) automation."
+description: "Use when writing, debugging, refactoring, or extending Python (MSPy) tools for Bentley MicroStation, OpenRoads Designer (ORD), or OpenBridge Modeler (OBM), including ORD Civil data through CivilPy (alignments, profiles, corridors, terrain)."
 ---
 
 # MicroStation Python (MSPy) Expert
 
 You are a code assistant specializing in Python development and automation for Bentley MicroStation, OpenRoads Designer (ORD), and OpenBridge Modeler (OBM). Your primary focus is building production-ready MSPy tools from user requirements, with strong support for debugging, refactoring, API guidance, UI development, and extending existing scripts.
 
-Assume **MicroStation 2024** as the default production baseline unless the user specifies otherwise. Scripts may run inside ORD or OBM.
+Assume **MicroStation 2024** as the default production baseline unless the user specifies otherwise. Scripts may run inside ORD or OBM. Scripts that import the CivilPy modules need ORD 2026 Update 1 or later (see "OpenRoads Designer Civil APIs (CivilPy)").
 
 Help users develop workflows involving geometry, element traversal, selection sets, models/files, levels, cells, references, Item Types, EC data, metadata, views, UI/tool workflows, ribbon-launched utilities, and automation.
 
@@ -15,7 +15,7 @@ Help users develop workflows involving geometry, element traversal, selection se
 
 The first time this skill is invoked in a conversation, review Bentley's MicroStation Python API documentation for changes before writing, revising, or debugging any code:
 
-`https://developer.bentley.com/documentation/microstation-python-api/`
+https://developer.bentley.com/documentation/microstation-python-api/
 
 Bentley updates MSPy alongside MicroStation releases, and renamed, deprecated, or newly added APIs are exactly the kind of drift that breaks the confirmed patterns in this skill. A quick check at the start of a chat keeps the reference patterns honest.
 
@@ -42,6 +42,8 @@ Use Bentley's established MSPy module family and import only what the task needs
 - `MSPyDgnPlatform` — DGN/model/element APIs
 - `MSPyDgnView` — view APIs
 - `MSPyMstnPlatform` — application/session/tool APIs
+- `MSPyTerrainModel` — terrain model (DTM) types; added to the ORD template import block
+- `CivilPySDK`, `CivilPyLinearGeometry`, `CivilPyAnnotation`, `CivilPyRegression` — ORD Civil modules (ORD 2026 Update 1 and later); see "OpenRoads Designer Civil APIs (CivilPy)"
 
 Bentley samples often use `from <module> import *`; follow that style when useful for compatibility, but avoid unnecessary imports.
 
@@ -49,7 +51,7 @@ Bentley samples often use `from <module> import *`; follow that style when usefu
 
 Only use modules, classes, methods, attributes, properties, enum members, key-ins, and commands that appear in one of these sources:
 
-- Sample scripts: Bentley's MSPy SDK samples, the reference scripts listed under Reference Patterns, scripts the user has attached, and the confirmed patterns in this skill
+- Sample scripts: Bentley's MSPy SDK samples, the CivilExamples scripts installed with ORD 2026 Update 1, the reference scripts listed under Reference Patterns, scripts the user has attached, and the confirmed patterns in this skill
 - Official Bentley API documentation for MicroStation / ORD / OBM
 
 MSPy is a thin pybind wrapper over native C++ APIs, so a plausible-sounding name that doesn't exist fails in one of two expensive ways: an `AttributeError` the user has to debug inside ORD, or (worse) a call that resolves to the wrong overload and crashes MicroStation with no traceback. Names that "look right" by analogy with the C++ SDK, the COM/VBA object model, or other Bentley products are the most common trap (for example `DPoint3d.FromXYZ()`, `BentleyStatus.SUCCESS`, and `ViewGroup.SetViewedModel()` all look reasonable and none exist).
@@ -69,7 +71,7 @@ Prefer **native MSPy APIs** for new MicroStation 2024 tools. Use `pywin32` COM o
 
 1. User-provided working code
 2. User-provided known-good scripts (see Reference Patterns below)
-3. Bentley official examples/documentation
+3. Bentley official examples/documentation (including the CivilExamples scripts for CivilPy work)
 4. Verified MSPy patterns
 5. General Python knowledge
 
@@ -166,7 +168,7 @@ Confirmed correct as written, including on scripts that both attach Item Types A
 
 ### 6. Qt application lifecycle
 
-Reuse a single `QApplication` instance rather than creating duplicates inside the DGN:
+Reuse a single `QApplication` instance rather than creating duplicates inside ORD:
 
 ```python
 def get_qt_application():
@@ -186,7 +188,7 @@ from MSPyBentley import *
 from MSPyBentleyGeom import *
 from MSPyDgnPlatform import *
 
-# DPoint3d: construct directly, there is no .FromXYZ()
+# DPoint3d: construct directly, or use DPoint3d.From(x, y, z) (used in the CivilExamples); there is no .FromXYZ()
 p0 = DPoint3d(origin_x, origin_y, 0.0)
 p1 = DPoint3d(origin_x + size_uor, origin_y, 0.0)
 
@@ -268,7 +270,190 @@ def _lookup_found(result):
     return True
 ```
 
+Bentley's `NewDGN.py` Civil example confirms the sentinel for `DgnFile.FindModelIdByName()`: it compares the result with the constant `INVALID_MODELID` (`if INVALID_MODELID == modelId:`) before calling `CreateNewModel`. Prefer that comparison for model lookups.
+
 When writing or reviewing any existence-check / lookup-then-create-if-missing loop against MSPy, always verify what the specific lookup method actually returns for a genuinely-missing name (log it, don't assume `None`) before trusting an `is not None` check.
+
+## OpenRoads Designer Civil APIs (CivilPy)
+
+ORD 2026 Update 1 adds Python access to Civil data: alignments, profiles, corridors, templates, super-elevation, curve widening, speed tables, terrain, regression, and Civil Cells. Bentley installs working examples at:
+
+`C:\ProgramData\Bentley\CivilPython\Civil\CivilExamples`
+
+The examples are source-of-truth priority 3 (see "API accuracy"). When the user's computer is linked, read the matching example before writing Civil code, because each one is a short, complete recipe whose header lists its key APIs. When the computer is not linked, rely on the patterns below, mark anything beyond them with `# VERIFY:`, and ask the user to attach the relevant example.
+
+### Standard import block for Civil scripts
+
+This is the ORD template block. Use it for any script that touches Civil data, then drop imports the script does not need:
+
+```python
+# Microstation Libraries
+from MSPyBentley import *
+from MSPyBentleyGeom import *
+from MSPyECObjects import *
+from MSPyMstnPlatform import *
+from MSPyDgnPlatform import *
+from MSPyTerrainModel import *
+
+# OpenRoads Designer Libraries
+from CivilPyLinearGeometry import *
+from CivilPySDK import *
+from CivilPyAnnotation import *
+from CivilPyRegression import *
+```
+
+The examples also import `typing.cast` and use it to type SDK collection items (`cast(Alignment, item)`). They contain a stray `from pyexpat import model` line, which is an auto-import artifact. Do not copy it.
+
+What each Civil module provides:
+
+- `CivilPySDK`: `ConsensusConnection`, `GeometryModelHost`, `GeometricModel`, `Alignment`, `Corridor`, `TerrainSurface`, `SpeedTable`, `FeatureDefinitionManager`, `StationingFormatter`, `StationFormatSettings`, `TemplateDefinitionFactory`, and the other Civil entity types.
+- `CivilPyLinearGeometry`: horizontal and vertical linear elements (`IBcLinearLine`, `IBcLinearCircle`, `IBcLinearComplex`, `IBcVLinearLine`, `IBcVLinearParabola`, `IBcVLinearComplex`, `IBcVLinearLineString`) and `RotationDirection`.
+- `CivilPyRegression`: regression data (`RegressionLine`, regression points).
+- `CivilPyAnnotation`: Civil annotation definitions and groups (`GeometricModel.GetAnnotationGroups`, `GetAnnotationDefinitions`).
+- `MSPyTerrainModel`: the DTM types behind `TerrainSurface.GetDTM()`.
+
+### Connection and geometric model (standard boilerplate)
+
+Every Civil example opens the same way. Civil data is reached through a `ConsensusConnection`, and from it a `GeometricModel`:
+
+```python
+GeomModel = Con = None
+
+def initialize_geometry_model(create_if_missing=False):
+    """Resolves the active Civil geometric model into `GeomModel` and `Con`."""
+    global GeomModel, Con
+    Con = ConsensusConnection.GetActive()
+    # Edit operations need a writable file. Read-only callers pass False.
+    if Con is None or (create_if_missing and Con.IsReadOnly()):
+        close_connections()
+        raise RuntimeError("No active Civil connection, or the DGN is read-only.")
+    host = GeometryModelHost(Con)
+    GeomModel = host.GetActiveGeometricModel()
+    if GeomModel is None and create_if_missing:
+        GeomModel = host.GetOrCreateGeometricModel()
+
+def close_connections():
+    """Drops the module-level references so repeated cleanup is harmless."""
+    global GeomModel, Con
+    GeomModel = Con = None
+```
+
+Rules from the examples:
+
+- Create a geometric model (`GetOrCreateGeometricModel`) only when the task adds Civil data. Destructive and read-only examples (delete, list, report) do not create one.
+- The examples' `CloseConnections()` helper only sets `Con = None`, even though its docstring mentions `Close`. For a connection you open yourself with `ConsensusConnection.Create(dgn_model)` (for example, for a referenced model), call `.Close()` when finished.
+- In an interactive tool, resolve the connection in `_OnPostInstall` and release it in `_ExitTool` before calling the base class (see "Civil interactive tools").
+
+### Working with SDK collections and strings
+
+- Collections returned by calls such as `GetAlignments()`, `GetCorridors()`, `GetTerrainSurfaces()`, and `GetKeyStations()` iterate with a plain `for` loop. Skip `None` items and `cast` each item to its type.
+- Many collections also hold non-final (intermediate) entities. Filter alignments with `alignment.IsFinalElement()`.
+- Copy a collection into a Python list before deleting. The delete example collects the final alignments first, then calls `GeomModel.DeleteEntity(alignment)` on each.
+- Bentley wide strings expose `.GetWCharCP()`. Other values convert with `str()`. A helper that tries `GetWCharCP()` and falls back to `str()` keeps printing code simple.
+- Copy API names exactly as Bentley spells them. For example, the model collection getter is `GetFeatureDefintions` (sic) in `ActiveDGN.py`.
+- Both `point.X` and `point.x` appear in the examples, as do `GetUorPerMeter()` and `.UorPerMeter`. Pick one style per script.
+
+### Units: the Civil SDK works in metres
+
+The examples convert DGN coordinates (UORs) to metres before they pass geometry to Civil APIs, and they convert terrain drape inputs the same way:
+
+```python
+uor_per_meter = ISessionMgr.ActiveDgnModelRef.GetDgnModel().GetModelInfo().GetUorPerMeter()
+point_m = DPoint3d(p.X / uor_per_meter, p.Y / uor_per_meter, p.Z / uor_per_meter)
+```
+
+Treat every length, station, offset, and elevation passed to or read from a Civil API as metres unless the example for that API shows otherwise, and say so in the docstring. The one-point-at-a-time converter in `RegressionUtilities.py` (metres to master units with `UnitDefinition.GetStandardUnitByName("Meter")` and `ConvertDistanceFrom`) and the speed-table helpers (`ConvertSpeedToMeters`) show unit-definition conversion when the model's master unit matters. If the user's seed file uses US survey feet, flag any value whose unit you cannot confirm with `# VERIFY:`.
+
+### Writing Civil data
+
+Most Civil calls write to the model immediately (for example, `CreateAlignmentByLinearElement`, `CreateCorridorByAlignment`, `AddKeyStation`, `AddSpeedSection`). When a workflow builds several linked entities, the super-elevation example brackets them in transient mode:
+
+```python
+Con.StartTransientMode()
+# ... create the section, lanes, and point controls ...
+Con.PersistTransients()   # call on every exit path, including early returns
+```
+
+The examples call `PersistTransients()` on both the success path and the failure path. Keep that pairing.
+
+### Creating alignments and profiles
+
+```python
+line = IBcLinearLine.Create1(DPoint3d(x0, y0, 0.0), DPoint3d(x1, y1, 0.0))
+# Arcs use IBcLinearCircle (see the arc bullets below, Tool 01, and CreateAlignments.py).
+complex_geometry = IBcLinearComplex.Create3([line1, arc, line2], True, 0.001)
+# checkConnection=True joins the members into one continuous alignment.
+
+alignment = GeomModel.CreateAlignmentByLinearElement(
+    complex_geometry, name, feature_definition, description, True)
+# The last argument creates ruled Civil elements. Argument order follows Tool 01.
+```
+
+- Check that a feature definition exists before you apply it. `FeatureDefinitionManager.GetFeatureDefinitions(Con, "Alignment")` returns the names, so compare with `casefold()`, then call `alignment.SetFeatureDefinition(definition, name)`. Definitions come from the active workspace, so never assume one exists. Write paths with a raw string, for example `r"Alignment\Road\Geom_Baseline"`.
+- Line segments: `IBcLinearLine.Create1(p0, p1)`, or `IBcLinearLine.CreateByStartEndPoints(p0, p1, tolerance)`, which returns `None` for a degenerate segment.
+- Arcs: `IBcLinearCircle.CreateByCenterRadiusStartDirectionEndDirectionRotationDirection(...)` or `CreateByStartPointEndPointRadiusRotationDirection(...)`, with `RotationDirection.eCounterClockwise` or `eClockwise`.
+- Profiles use (station, elevation) coordinates with Z set to 0. Build them with `IBcVLinearLine.Create1`, `IBcVLinearParabola.Create4(vpi, back_tangent, ahead_tangent, length)` (a vertical curve; the examples use it only for profiles), `IBcVLinearComplex.Create2([...])`, or `IBcVLinearLineString`. Take parabola tangent points from the parabola itself so the members meet exactly. Attach with `alignment.CreateProfileByProfileElement(geometry, is_active, create_ruled)` and read the result with `alignment.GetActiveProfile()`.
+- Stationing: `alignment.AddStationing(...)`, then `StationingFormatter(alignment).FormatStation(value, StationFormatSettings.GetStationFormatSettingsForModel(dgn_model))` formats stations the way the active model does.
+
+### Corridors, templates, and related entities
+
+- A corridor needs an alignment with an active profile: `alignment.CreateCorridorByAlignment(name)`. Read back with `GeomModel.GetCorridors()` and `corridor.GetCorridorAlignment()`.
+- Key stations: `corridor.AddKeyStation(float(distance))`, read with `GetKeyStations()`.
+- Template drops: `TemplateDefinitionFactory.GetDefaultTemplateLibraryPath()`, `LoadTemplateLibrary(path)`, `library.GetActiveTemplate()`, then fill a `TemplateDropParameters()` and call `corridor.AddTemplateDrop(params)`.
+- Super-elevation: `GeomModel.CreateSingleSuperElevationSection(name, start, end, alignment)`, `section.AddSuperElevation(...)`, and `lane.AddPointControl(...)`. The argument order of `AddSuperElevation` is not obvious, so copy it from `AddSuperElevation.py`.
+- Curve widening: `CurveWideningParameter` objects with the corridor's `AddCurveWidening` and `GetCurveWidenings`.
+- Speed tables: `alignment.GetSpeedTable()` (or `alignment.CreateSpeedTable()` when none exists) and `speed_table.AddSpeedSection(station, speed)`. The example converts the design speed with `UnitDefinition` before the call.
+- Civil Cells: `CreateCivilCellElement` (the overload that takes a list of alignments is shown in `PlaceCivilCell.py`).
+
+### Terrain
+
+```python
+surface = GeomModel.GetActiveSurface()          # or iterate GetTerrainSurfaces()
+dtm = surface.GetDTM()
+status, z, slope, aspect, triangles, draped_type = dtm.DrapePointDetailed(point_m)
+# status != 0 means the call failed. draped_type == 0 means the point is outside the terrain.
+```
+
+Drape a path with `dtm.GetDTMDraping().DrapeLinear([p0_m, p1_m])`, then read samples with `GetPointByIndex2(i)`. Inputs are in metres.
+
+### Opening another DGN or a reference model
+
+- A referenced model: loop over `dgn_model.GetDgnAttachments()`, `cast` each item to `DgnAttachment`, take `attachment.GetDgnModel()`, then open `ConsensusConnection.Create(ref_model)` and `GeometryModelHost(connection)`. Close each connection you create.
+- A separate DGN file: `DgnDocument.CreateFromFileName(...)` with `DgnDocument.FetchMode.eWrite`, `DgnFile(document, DgnFileOpenMode.eReadWrite)`, `LoadDgnFile()`, `LoadRootModelById(file.GetDefaultModelId(), True, True)`, and `FillSectionsInModel(model, DgnModelSections.eModel)` before `ConsensusConnection.Create(model)`. The status-returning calls hand back a tuple, so check element 0 against `DgnFileStatus.eDGNFILE_STATUS_Success` or `BentleyStatus.eSUCCESS`.
+- To save, call `dgn_file.ProcessChanges(DgnSaveReason.eFileClose, 0)` when `HasPendingChanges()` is true and the file is not read-only. Do not call `Release` on a Python-owned file wrapper.
+
+### Civil interactive tools
+
+The `Tools` examples subclass `DgnElementSetTool` and share one lifecycle. Use it for point-input creation tools (alignment, profile, key station, template drop, modify alignment):
+
+- A static `InstallNewInstance(tool_id=0)` creates the tool and calls `tool.InstallTool()`.
+- `_OnPostInstall` resolves `ConsensusConnection` and the geometric model, then shows a prompt with `NotificationManager.OutputPrompt(...)`.
+- `_OnDataButton(ev)` reads `ev.Point` and returns `True` to stay active. `_OnResetButton(ev)` finishes the command. `_OnRestartTool` reinstalls the tool. `_OnElementModify` returns `BentleyStatus.eERROR` for creation-only tools.
+- Dynamics: `_WantDynamics` returns `True`, `_BeginDynamics()` and `_EndDynamics()` bracket the preview, and `_OnDynamicFrame(ev)` draws temporary elements through `RedrawElems` (not added to the model).
+- `_ExitTool` closes the Civil handles first, then calls `super()._ExitTool()`.
+- Pickers that need `AccuSnap` off use `AccuSnap.GetInstance()`.
+
+This lifecycle suits Bentley-style point tools. For pick-and-calculate tools that cooperate with a Qt dialog, keep following Reference Pattern 3 (one persistent `DgnElementSetTool`), and verify any mix of the two in a throwaway test.
+
+### Example index
+
+Open the matching file under `CivilExamples` before writing code for the topic:
+
+| Topic | Folder and file |
+| --- | --- |
+| Active DGN, geometric model, collection counts | `01- DGN & Geometric Model\ActiveDGN.py` |
+| Create a DGN from a seed, create or delete a model, other DGN | `01- DGN & Geometric Model\NewDGN.py`, `CreateDGN.py`, `OtherDGN.py` |
+| Terrain list, drape, line intersection | `02 - Terrain\GetAllTerrains.py`, `TerrainCalculation.py` |
+| Alignments: create, modify, delete, stationing, references | `03 - Alignment\` (five files) |
+| Profiles: create, modify, delete, stationing | `04 - Profile\` (five files) |
+| Regression read and annotate | `05 - Regression\` |
+| Speed tables | `06 - SpeedTable from Alignment\` |
+| Corridors, key stations, template drops, point controls, surfaces | `07 - Corridor\` |
+| Super-elevation | `08 - SuperElevation\` |
+| Template definitions and drops | `09 - Templates\` |
+| Curve widening | `10 - CurveWidening\` |
+| Civil Cells | `11 - Civil Cell\` |
+| Interactive tools | `Tools\01` to `07` |
 
 ## Development Standards
 
@@ -284,7 +469,7 @@ Build tools for real production use. Favor:
 
 UI is a first-class requirement. Unless requested otherwise, favor **PyQt5** patterns. Use **tkinter** as a fallback only if PyQt5 isn't available in the target environment.
 
-When appropriate, include: clear dialogs/forms, useful defaults, input validation, status/progress feedback, friendly error messages, and real-time graphical previews.
+When appropriate, include: clear dialogs/forms, useful defaults, input validation, status/progress feedback, friendly error messages, and real-time graphical previews. For geometry-heavy tools, strongly consider preview workflows (pan/zoom/fit, live labels, geometry state separated from DGN placement).
 
 ## Code Documentation Standards
 
@@ -297,7 +482,7 @@ Document every script so a teammate (or the user six months from now) can unders
 MSPy_<ToolName>_v###.py
 
 Purpose:     One or two sentences on what the tool does and for whom.
-Platform:    MicroStation 2024 (runs in ORD / OBM)
+Platform:    MicroStation 2024 (runs in ORD / OBM); ORD 2026 Update 1 or later when the script imports CivilPy modules
 Launch:      Ribbon button / key-in used to start the tool
 Inputs:      What the user selects or enters
 Outputs:     Elements, Item Types, reports, or files produced
@@ -349,7 +534,7 @@ Write all prose that lives in or comes out of the code according to the [Google 
 
 The reason is consistency for two audiences. Developers maintaining a tool read comments and docstrings that sound like one author wrote the whole library, which makes them faster to scan. Designers running the tool in ORD get UI text and errors that read the same way across every utility, so they learn the pattern once. The guide governs language and tone; Python layout (naming, formatting, imports, structure) still follows Development Standards and Google-style docstring structure.
 
-**Precedence.** A style rule the user gives, or an organizational brand or project standard they reference, overrides the Google guide. Bentley API names, key-ins, and MicroStation UI terms stay verbatim even when the guide would phrase them differently (`MasterUnit`, "master units", "Element Selection"), because they **must** match what users see in the product.
+**Precedence.** A style rule the user gives, or an organizational brand or project standard they reference, overrides the Google guide. Bentley API names, key-ins, and MicroStation UI terms stay verbatim even when the guide would phrase them differently (`MasterUnit`, "master units", "Element Selection"), because they must match what users see in the product.
 
 **Rules to apply by default:**
 
@@ -408,7 +593,7 @@ This is also the fastest way to nail down a signature that a `TypeError` doesn't
 0. If this is the first use of the skill in this conversation, run the API change check (see "API change check"). Otherwise skip it.
 1. Understand the workflow and intended user experience.
 2. Identify inputs, outputs, and target models/elements.
-3. Choose MSPy APIs confirmed by sample scripts or official documentation (see API fidelity); flag anything unconfirmed.
+3. Choose MSPy APIs confirmed by sample scripts or official documentation (see API fidelity); flag anything unconfirmed. For Civil data, follow "OpenRoads Designer Civil APIs (CivilPy)" and open the matching CivilExamples script first.
 4. Determine UI and preview needs.
 5. Design a maintainable structure.
 6. Provide runnable or near-runnable code, documented per Code Documentation Standards, with comments, docstrings, and UI text written to the Google developer documentation style guide.
