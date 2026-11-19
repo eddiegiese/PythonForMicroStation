@@ -1,5 +1,5 @@
 # ================================================================
-# PGA ORD ITEM TYPE PAINTER - v0.18
+# PGA ORD ITEM TYPE PAINTER - v0.23
 #
 # TWO-PASS ITEM TYPE WRITE BUILD
 #
@@ -8,6 +8,33 @@
 # Read all attached Item Types and primitive Item Type properties from one
 # source element, display them in a Tk UI, then graphically select target
 # elements and copy the source metadata to those targets.
+#
+# v0.23 STANDARD TREE TEXT
+# -----------------------
+# Restore the original tree font and row height while keeping Apply after Value.
+#
+# v0.22 CHECKBOX LAYOUT
+# ---------------------
+# Show the Apply column to the right of Value and enlarge the Item Type rows
+# so their checkboxes are easier to see and click.
+#
+# v0.21 ITEM TYPE SELECTION
+# ------------------------
+# Step 2 starts with every source Item Type selected. Users can toggle each
+# Item Type before each target run. Only selected Item Types enter the
+# assignment snapshot; the source snapshot remains intact for later runs.
+#
+# v0.20 MOVABLE DIALOG
+# -------------------
+# Add a visible drag handle and retain the user's window position when the
+# dialog minimizes for source or target selection and then returns.
+#
+# v0.19 PERSISTENT DIALOG AND COMPACT LAYOUT
+# -------------------------------------------
+# Keep the review dialog's event loop running while the target picker
+# collects elements. Minimize it during picking, then restore it after
+# picker cleanup and the assignment result. The same source can be used
+# for another target set, or re-picked in Step 1.
 #
 # FIELD-TEST HISTORY
 # ------------------
@@ -252,7 +279,7 @@ from tkinter import ttk, messagebox
 # CONSTANTS
 # ================================================================
 
-SCRIPT_TITLE = "PGA Item Type Painter - v0.18"
+SCRIPT_TITLE = "PGA Item Type Painter - v0.23"
 
 TARGET_PICK_TOOL_ID = 9219
 
@@ -658,7 +685,7 @@ def _api_result_failed(result):
 
 WRITE_LOG_PATH = os.path.join(
     tempfile.gettempdir(),
-    "PGA_ORD_ItemTypePainter_v018.log",
+    "PGA_ORD_ItemTypePainter_v023.log",
 )
 
 
@@ -670,7 +697,7 @@ def _reset_write_log():
             encoding="utf-8",
         ) as log:
             log.write(
-                "PGA Item Type Painter v0.18 write log\n"
+                "PGA Item Type Painter v0.23 write log\n"
             )
             log.write(
                 time.strftime(
@@ -2316,17 +2343,16 @@ class ItemTypeTargetPickTool(DgnElementSetTool):
                     target_ids
                 )
             except Exception as ex:
-                _msg_error(
-                    SCRIPT_TITLE,
-                    ex,
-                )
+                _msg_error(SCRIPT_TITLE, ex)
+                complete_callback.__self__.on_callback_failure(ex)
 
             return
 
         try:
             abort_callback()
-        except Exception:
-            pass
+        except Exception as ex:
+            _msg_error(SCRIPT_TITLE, ex)
+            abort_callback.__self__.on_callback_failure(ex)
 
 
     def _OnRestartTool(self):
@@ -2370,10 +2396,15 @@ class ItemTypePainterDialog:
         self.action = None
 
         self.source_pick_active = False
+        self.target_pick_active = False
         self.source_poll_after_id = None
         self.microstation_pump_after_id = None
         self._last_source_selection_count = None
         self.dialog_closed = False
+        self._saved_geometry = None
+        self._drag_start = None
+        self.selected_item_indices = set()
+        self.item_row_indices = {}
 
         self.root = tk.Tk()
 
@@ -2413,9 +2444,19 @@ class ItemTypePainterDialog:
         )
 
         outer.rowconfigure(
-            1,
+            2,
             weight=1,
         )
+
+        move_handle = ttk.Label(
+            outer,
+            text="Drag to move",
+            cursor="fleur",
+        )
+        move_handle.grid(row=0, column=0, sticky="e")
+        move_handle.bind("<ButtonPress-1>", self._start_drag)
+        move_handle.bind("<B1-Motion>", self._drag_dialog)
+        move_handle.bind("<ButtonRelease-1>", self._end_drag)
 
         # --------------------------------------------------------
         # SOURCE
@@ -2428,7 +2469,7 @@ class ItemTypePainterDialog:
         )
 
         source_frame.grid(
-            row=0,
+            row=1,
             column=0,
             sticky="ew",
         )
@@ -2464,7 +2505,7 @@ class ItemTypePainterDialog:
 
         self.source_button = ttk.Button(
             source_frame,
-            text="Pick / Re-Pick Source Element",
+            text="Select Source Element",
             command=self.toggle_source_pick,
             width=30,
         )
@@ -2479,10 +2520,10 @@ class ItemTypePainterDialog:
         ttk.Label(
             source_frame,
             text=(
-                "Click the button, then select exactly one source element "
-                "graphically in MicroStation."
+                "Select exactly one source element "
+                "graphically in MicroStation/OpenRoads."
             ),
-            wraplength=820,
+            wraplength=630,
         ).grid(
             row=1,
             column=0,
@@ -2497,12 +2538,12 @@ class ItemTypePainterDialog:
 
         property_frame = ttk.LabelFrame(
             outer,
-            text="Step 2. Verify Item Types and Values",
+            text="Step 2. Select Item Types and Verify Values",
             padding=8,
         )
 
         property_frame.grid(
-            row=1,
+            row=2,
             column=0,
             sticky="nsew",
             pady=(10, 0),
@@ -2514,16 +2555,36 @@ class ItemTypePainterDialog:
         )
 
         property_frame.rowconfigure(
-            0,
+            1,
             weight=1,
         )
+
+        selection_bar = ttk.Frame(property_frame)
+        selection_bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        selection_bar.columnconfigure(0, weight=1)
+        ttk.Label(
+            selection_bar,
+            text="Click an Apply box to include or exclude an Item Type.",
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Button(
+            selection_bar,
+            text="Select all",
+            command=self.select_all_item_types,
+            width=10,
+        ).grid(row=0, column=1, padx=(8, 4))
+        ttk.Button(
+            selection_bar,
+            text="Clear all",
+            command=self.clear_all_item_types,
+            width=10,
+        ).grid(row=0, column=2)
 
         tree_frame = ttk.Frame(
             property_frame
         )
 
         tree_frame.grid(
-            row=0,
+            row=1,
             column=0,
             sticky="nsew",
         )
@@ -2542,6 +2603,7 @@ class ItemTypePainterDialog:
             tree_frame,
             columns=(
                 "value",
+                "apply",
             ),
             show="tree headings",
             height=17,
@@ -2557,18 +2619,31 @@ class ItemTypePainterDialog:
             text="Value",
         )
 
+        self.tree.heading(
+            "apply",
+            text="Apply",
+        )
+
         self.tree.column(
             "#0",
-            width=335,
+            width=300,
             minwidth=180,
             stretch=True,
         )
 
         self.tree.column(
             "value",
-            width=365,
-            minwidth=160,
+            width=200,
+            minwidth=120,
             stretch=True,
+        )
+
+        self.tree.column(
+            "apply",
+            width=75,
+            minwidth=75,
+            stretch=False,
+            anchor="center",
         )
 
         self.tree.grid(
@@ -2605,6 +2680,8 @@ class ItemTypePainterDialog:
             yscrollcommand=yscroll.set,
             xscrollcommand=xscroll.set,
         )
+        self.tree.bind("<Button-1>", self._toggle_item_type_from_click, add="+")
+        self.tree.bind("<space>", self._toggle_focused_item_type, add="+")
 
         # --------------------------------------------------------
         # TARGET ASSIGNMENT
@@ -2617,42 +2694,38 @@ class ItemTypePainterDialog:
         )
 
         assign_frame.grid(
-            row=2,
+            row=3,
             column=0,
             sticky="ew",
             pady=(10, 0),
         )
 
-        assign_frame.columnconfigure(
-            0,
-            weight=1,
-        )
+        assign_frame.columnconfigure(0, weight=1)
+
+        instruction = ttk.Frame(assign_frame)
+        instruction.grid(row=0, column=0, sticky="w")
+
+        ttk.Label(
+            instruction,
+            text="Select one or more elements (Left-click).",
+        ).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(
+            instruction,
+            text="Reset (Right-click) to accept.",
+        ).grid(row=1, column=0, columnspan=3, sticky="w")
 
         self.assign_button = ttk.Button(
             assign_frame,
             text="Assign to Target Elements",
             command=self.assign_targets,
             state="disabled",
+            width=30,
         )
-
         self.assign_button.grid(
             row=0,
-            column=0,
-            sticky="ew",
-        )
-
-        ttk.Label(
-            assign_frame,
-            text=(
-                "Click Assign to Target Elements, then data-point target elements in MicroStation. "
-                "Reset/right-click accepts the target set."
-            ),
-            wraplength=820,
-        ).grid(
-            row=1,
-            column=0,
-            sticky="w",
-            pady=(8, 0),
+            column=1,
+            sticky="e",
+            padx=(12, 0),
         )
 
         # --------------------------------------------------------
@@ -2664,7 +2737,7 @@ class ItemTypePainterDialog:
         )
 
         footer.grid(
-            row=3,
+            row=4,
             column=0,
             sticky="ew",
             pady=(10, 0),
@@ -2685,7 +2758,7 @@ class ItemTypePainterDialog:
         ttk.Label(
             footer,
             textvariable=self.status_var,
-            wraplength=750,
+            wraplength=600,
         ).grid(
             row=0,
             column=0,
@@ -2716,7 +2789,7 @@ class ItemTypePainterDialog:
 
         try:
             self.root.minsize(
-                780,
+                630,
                 500,
             )
         except Exception:
@@ -2729,6 +2802,46 @@ class ItemTypePainterDialog:
         self._schedule_microstation_pump()
 
 
+    def _start_drag(self, event):
+        """Records the pointer and window position at the start of a drag."""
+        self._drag_start = (
+            event.x_root,
+            event.y_root,
+            self.root.winfo_x(),
+            self.root.winfo_y(),
+        )
+
+
+    def _drag_dialog(self, event):
+        """Moves the dialog with the pointer while the handle is held."""
+        if self._drag_start is None:
+            return
+        pointer_x, pointer_y, window_x, window_y = self._drag_start
+        new_x = window_x + event.x_root - pointer_x
+        new_y = window_y + event.y_root - pointer_y
+        self.root.geometry(f"+{new_x}+{new_y}")
+
+
+    def _end_drag(self, event):
+        """Ends the drag and retains the moved position."""
+        self._drag_start = None
+
+
+    def _minimize_for_pick(self):
+        """Saves the current position before minimizing for element picking."""
+        self._saved_geometry = self.root.wm_geometry()
+        self.root.iconify()
+
+
+    def _restore_after_pick(self):
+        """Returns the dialog to the position it held before picking."""
+        self.root.deiconify()
+        if self._saved_geometry is not None:
+            self.root.geometry(self._saved_geometry)
+        self.root.lift()
+        self.root.focus_force()
+
+
     # ------------------------------------------------------------
     # SOURCE DISPLAY
     # ------------------------------------------------------------
@@ -2739,6 +2852,99 @@ class ItemTypePainterDialog:
             self.tree.delete(
                 iid
             )
+        self.item_row_indices.clear()
+
+
+    def _selected_snapshot(self):
+        """Returns only the Item Types selected for the next target run."""
+        if not self.source_snapshot:
+            return None
+        items = self.source_snapshot.get("items", [])
+        return {
+            "source_element_id": self.source_snapshot["source_element_id"],
+            "items": [item for index, item in enumerate(items)
+                      if index in self.selected_item_indices],
+        }
+
+
+    def _update_item_type_selection(self, update_status=True):
+        """Updates the Apply boxes and target button from the current choices."""
+        for row_id, index in self.item_row_indices.items():
+            self.tree.set(
+                row_id,
+                "apply",
+                "\u2611" if index in self.selected_item_indices else "\u2610",
+            )
+
+        selected_snapshot = self._selected_snapshot()
+        ready = source_snapshot_is_assignable(selected_snapshot)
+        self.assign_button.configure(
+            state="normal" if ready and not self.source_pick_active
+            and not self.target_pick_active else "disabled"
+        )
+        if not update_status or not self.source_snapshot:
+            return
+        total = len(self.source_snapshot.get("items", []))
+        selected = len(self.selected_item_indices)
+        if selected == 0:
+            self.status_var.set("Select at least one Item Type to assign.")
+        elif not ready:
+            self.status_var.set(
+                "A selected Item Type could not be resolved. Clear its Apply box to continue."
+            )
+        else:
+            self.status_var.set(
+                f"Ready: {selected} of {total} Item Type(s) selected for assignment."
+            )
+
+
+    def _toggle_item_type_from_click(self, event):
+        """Toggles an Item Type when its Apply box is clicked."""
+        if self.source_pick_active or self.target_pick_active:
+            return
+        if self.tree.identify_region(event.x, event.y) != "cell":
+            return
+        if self.tree.identify_column(event.x) != "#2":
+            return
+        row_id = self.tree.identify_row(event.y)
+        index = self.item_row_indices.get(row_id)
+        if index is None:
+            return
+        if index in self.selected_item_indices:
+            self.selected_item_indices.remove(index)
+        else:
+            self.selected_item_indices.add(index)
+        self._update_item_type_selection()
+
+
+    def _toggle_focused_item_type(self, event):
+        """Toggles the focused Item Type with the Space key."""
+        if self.source_pick_active or self.target_pick_active:
+            return "break"
+        index = self.item_row_indices.get(self.tree.focus())
+        if index is not None:
+            if index in self.selected_item_indices:
+                self.selected_item_indices.remove(index)
+            else:
+                self.selected_item_indices.add(index)
+            self._update_item_type_selection()
+        return "break"
+
+
+    def select_all_item_types(self):
+        """Selects every Item Type on the current source element."""
+        if self.source_pick_active or self.target_pick_active or not self.source_snapshot:
+            return
+        self.selected_item_indices = set(range(len(self.source_snapshot.get("items", []))))
+        self._update_item_type_selection()
+
+
+    def clear_all_item_types(self):
+        """Clears every Item Type selection on the current source element."""
+        if self.source_pick_active or self.target_pick_active:
+            return
+        self.selected_item_indices.clear()
+        self._update_item_type_selection()
 
 
     def refresh_source_display(self):
@@ -2746,6 +2952,7 @@ class ItemTypePainterDialog:
         self.clear_tree()
 
         snapshot = self.source_snapshot
+        self.selected_item_indices = set()
 
         if not snapshot:
 
@@ -2758,6 +2965,7 @@ class ItemTypePainterDialog:
                 "end",
                 text="(No source element selected)",
                 values=(
+                    "",
                     "",
                 ),
             )
@@ -2788,6 +2996,7 @@ class ItemTypePainterDialog:
             "items",
             [],
         )
+        self.selected_item_indices = set(range(len(items)))
 
         if not items:
 
@@ -2796,6 +3005,7 @@ class ItemTypePainterDialog:
                 "end",
                 text="(No Item Types attached to source element)",
                 values=(
+                    "",
                     "",
                 ),
             )
@@ -2810,7 +3020,7 @@ class ItemTypePainterDialog:
 
             return
 
-        for item in items:
+        for index, item in enumerate(items):
 
             item_text = (
                 f"{item.get('display_item', '(unknown Item Type)')} "
@@ -2823,9 +3033,11 @@ class ItemTypePainterDialog:
                 text=item_text,
                 values=(
                     "",
+                    "\u2611",
                 ),
                 open=True,
             )
+            self.item_row_indices[parent] = index
 
             rows = item.get(
                 "display_rows",
@@ -2839,6 +3051,7 @@ class ItemTypePainterDialog:
                     "end",
                     text="(No primitive properties)",
                     values=(
+                        "",
                         "",
                     ),
                 )
@@ -2859,6 +3072,7 @@ class ItemTypePainterDialog:
                                 "value",
                                 "",
                             ),
+                            "",
                         ),
                     )
 
@@ -2871,48 +3085,11 @@ class ItemTypePainterDialog:
                     values=(
                         "Item Type definition could not be resolved "
                         "in the active DGN file.",
+                        "",
                     ),
                 )
 
-        item_count = len(
-            items
-        )
-
-        property_count = sum(
-            len(
-                item.get(
-                    "display_rows",
-                    [],
-                )
-            )
-            for item in items
-        )
-
-        if source_snapshot_is_assignable(
-            snapshot
-        ):
-
-            self.assign_button.configure(
-                state="normal"
-            )
-
-            self.status_var.set(
-                f"Ready: source element "
-                f"{snapshot.get('source_element_id', 'Unknown')} | "
-                f"{item_count} Item Type(s), "
-                f"{property_count} primitive property value(s)."
-            )
-
-        else:
-
-            self.assign_button.configure(
-                state="disabled"
-            )
-
-            self.status_var.set(
-                "One or more Item Types could not be resolved to active "
-                "Item Type definitions. Assignment is disabled."
-            )
+        self._update_item_type_selection()
 
 
     # ------------------------------------------------------------
@@ -2952,6 +3129,10 @@ class ItemTypePainterDialog:
         if self.dialog_closed:
             return
 
+        if self._drag_start is not None:
+            self._schedule_microstation_pump()
+            return
+
         try:
 
             PyCadInputQueue.PythonMainLoop()
@@ -2984,7 +3165,7 @@ class ItemTypePainterDialog:
         Begin source selection with MicroStation's NATIVE Element Selection
         command. No custom DgnElementSetTool is installed.
         """
-        if self.source_pick_active:
+        if self.source_pick_active or self.target_pick_active:
             return
 
         try:
@@ -3039,7 +3220,7 @@ class ItemTypePainterDialog:
         # Minimize the Tk dialog so it cannot physically obstruct the view.
         # Tk's event loop remains alive so SelectionSet polling continues.
         try:
-            self.root.iconify()
+            self._minimize_for_pick()
         except Exception:
             pass
 
@@ -3197,9 +3378,7 @@ class ItemTypePainterDialog:
         return_to_default_command()
 
         try:
-            self.root.deiconify()
-            self.root.lift()
-            self.root.focus_force()
+            self._restore_after_pick()
         except Exception:
             pass
 
@@ -3244,9 +3423,7 @@ class ItemTypePainterDialog:
         return_to_default_command()
 
         try:
-            self.root.deiconify()
-            self.root.lift()
-            self.root.focus_force()
+            self._restore_after_pick()
         except Exception:
             pass
 
@@ -3257,23 +3434,7 @@ class ItemTypePainterDialog:
         except Exception:
             pass
 
-        if self.source_snapshot is not None:
-
-            self.assign_button.configure(
-                state=(
-                    "normal"
-                    if source_snapshot_is_assignable(
-                        self.source_snapshot
-                    )
-                    else "disabled"
-                )
-            )
-
-        else:
-
-            self.assign_button.configure(
-                state="disabled"
-            )
+        self._update_item_type_selection(update_status=False)
 
         if restore_status:
 
@@ -3344,15 +3505,45 @@ class ItemTypePainterDialog:
 
 
     def assign_targets(self):
-
-        if not source_snapshot_is_assignable(
-            self.source_snapshot
-        ):
+        """Starts one target assignment while keeping this dialog alive."""
+        if self.dialog_closed or self.source_pick_active or self.target_pick_active:
+            return
+        selected_snapshot = self._selected_snapshot()
+        if not source_snapshot_is_assignable(selected_snapshot):
+            self._update_item_type_selection()
             return
 
-        self._finish(
-            "assign_targets"
-        )
+        self.target_pick_active = True
+        self.assign_button.configure(state="disabled")
+        self.source_button.configure(state="disabled")
+        self.status_var.set("Select target elements in MicroStation; right-click to accept.")
+        try:
+            self._minimize_for_pick()
+            clear_picker_highlights(None)
+            controller = TargetAssignmentController(selected_snapshot, self)
+            TargetAssignmentController.s_instance = controller
+            ItemTypeTargetPickTool.InstallNewInstance(
+                TARGET_PICK_TOOL_ID,
+                selected_snapshot["source_element_id"],
+                controller.on_targets_complete,
+                controller.on_abort,
+            )
+        except Exception as ex:
+            TargetAssignmentController.s_instance = None
+            clear_picker_highlights(None)
+            return_to_default_command()
+            self.on_target_pick_finished("Could not start target selection: " + _short_error(ex))
+            _msg_error(SCRIPT_TITLE, "Could not start target selection:\n" + str(ex))
+
+    def on_target_pick_finished(self, status):
+        """Restores the dialog after the native picker and assignment finish."""
+        if self.dialog_closed:
+            return
+        self.target_pick_active = False
+        self.source_button.configure(state="normal")
+        self._update_item_type_selection(update_status=False)
+        self.status_var.set(status)
+        self._restore_after_pick()
 
 
     def close_from_escape(
@@ -3370,20 +3561,15 @@ class ItemTypePainterDialog:
 
 
     def close(self):
-
-        self._finish(
-            None
-        )
+        if self.target_pick_active:
+            self.status_var.set("Finish or cancel target selection in MicroStation before closing.")
+            return
+        self._finish(None)
 
 
     def show(self):
-
+        """Runs the review dialog until the user closes it."""
         self.root.mainloop()
-
-        return (
-            self.action,
-            self.source_snapshot,
-        )
 
 
 
@@ -3398,10 +3584,26 @@ class TargetAssignmentController:
     def __init__(
         self,
         source_snapshot,
+        dialog,
     ):
-
         self.source_snapshot = source_snapshot
+        self.dialog = dialog
         self.finished = False
+        self.restore_queued = False
+
+    def _restore_dialog(self, status):
+        """Queues dialog restoration after the native cleanup callback returns."""
+        if self.restore_queued:
+            return
+        self.restore_queued = True
+        TargetAssignmentController.s_instance = None
+        if not self.dialog.dialog_closed:
+            self.dialog.root.after(0, lambda: self.dialog.on_target_pick_finished(status))
+
+    def on_callback_failure(self, error):
+        """Restores the dialog if a post-cleanup step raises unexpectedly."""
+        _write_log("TARGET CALLBACK | unexpected error | " + str(error))
+        self._restore_dialog("Target assignment stopped. Review the MicroStation message and try again.")
 
 
     def on_targets_complete(
@@ -3429,7 +3631,7 @@ class TargetAssignmentController:
                 text
             )
 
-            TargetAssignmentController.s_instance = None
+            self._restore_dialog("No target elements were accepted. Select targets to try again.")
 
             return
 
@@ -3454,7 +3656,7 @@ class TargetAssignmentController:
                 str(ex),
             )
 
-            TargetAssignmentController.s_instance = None
+            self._restore_dialog("Target assignment failed. Review the MicroStation message and try again.")
 
             return
 
@@ -3532,7 +3734,10 @@ class TargetAssignmentController:
             ),
         )
 
-        TargetAssignmentController.s_instance = None
+        self._restore_dialog(
+            f"Applied {item_type_count} Item Type(s) to {item_type_applied_elements} element(s). "
+            "Select more targets or re-pick the source."
+        )
 
 
     def on_abort(
@@ -3554,7 +3759,7 @@ class TargetAssignmentController:
             "Item Type Painter target selection canceled."
         )
 
-        TargetAssignmentController.s_instance = None
+        self._restore_dialog("Target selection canceled. Select targets to try again.")
 
 
 # ================================================================
@@ -3610,95 +3815,13 @@ def main():
 
         source_snapshot = None
 
-    # ------------------------------------------------------------
-    # REVIEW / SOURCE-PICK UI
-    #
-    # Source picking uses only MicroStation's ordinary SelectionSet while Tk
-    # is active. No custom source DgnElementSetTool exists.
-    #
-    # Tk completely exits before the ONE custom target picker is installed.
-    # ------------------------------------------------------------
-
-    dialog = ItemTypePainterDialog(
-        source_snapshot
-    )
-
-    (
-        action,
-        source_snapshot,
-    ) = dialog.show()
-
-    if action != "assign_targets":
-
-        clear_picker_highlights(
-            None
-        )
-
-        return_to_default_command()
-
-        _prompt(
-            "Item Type Painter closed."
-        )
-
-        return
-
-    if not source_snapshot_is_assignable(
-        source_snapshot
-    ):
-
-        _msg_error(
-            SCRIPT_TITLE,
-            "Pick a valid source element before starting target assignment.",
-        )
-
-        return
-
-    # ------------------------------------------------------------
-    # TARGET
-    #
-    # CRITICAL:
-    # This remains the FIRST and ONLY custom DgnElementSetTool installed by
-    # v0.18. Everything downstream is intentionally retained from the proven
-    # v0.10 implementation.
-    # ------------------------------------------------------------
-
-    clear_picker_highlights(
-        None
-    )
-
-    controller = TargetAssignmentController(
-        source_snapshot
-    )
-
-    TargetAssignmentController.s_instance = controller
-
-    try:
-
-        ItemTypeTargetPickTool.InstallNewInstance(
-            TARGET_PICK_TOOL_ID,
-            source_snapshot[
-                "source_element_id"
-            ],
-            controller.on_targets_complete,
-            controller.on_abort,
-        )
-
-    except Exception as ex:
-
-        TargetAssignmentController.s_instance = None
-
-        clear_picker_highlights(
-            None
-        )
-
-        return_to_default_command()
-
-        _msg_error(
-            SCRIPT_TITLE,
-            "Could not start target selection:\n"
-            +
-            str(ex),
-        )
+    # Keep Tk alive for repeated source and target selection cycles.
+    # The native target picker still cleans up before its callback writes EC data.
+    dialog = ItemTypePainterDialog(source_snapshot)
+    dialog.show()
+    clear_picker_highlights(None)
+    return_to_default_command()
+    _prompt("Item Type Painter closed.")
 
 
 if __name__ == "__main__":
