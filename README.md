@@ -17,6 +17,11 @@ The tool allows the user to select a "source" element from which to inherit Item
 
 ![Item Type Painter Example Workflow](./assets/Demo_ItemTypePainter.gif)
 
+#### v023 Updates (2026-11-19)
+1. UX/UI changes
+2. Dialog persists after target assignment
+3. Item Type properties can be selectively applied to targets
+
 
 ## AI Skill: microstation-python-expert
 This skill for Claude, ChatGPT, etc. provides deep instructions for development and handling of Python for MicroStation when vibe-coding. Key highlights include:
