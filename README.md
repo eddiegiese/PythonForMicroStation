@@ -1,5 +1,5 @@
 # PythonForMicroStation
-Tools for MicroStation built in Python. Works in version 2024 and later. Some OpenX products support Python usage. Refer to [Bentley documentation](https://docs.bentley.com/LiveContent/index.html) for more information. 
+Tools for MicroStation and OpenRoads Designer built in Python. Works in version MS 2024, ORD 2026.1, and later. Refer to [Bentley documentation](https://docs.bentley.com/LiveContent/index.html) for more information. 
 
 I welcome any additional tools/scripts so we can make these products better!
 
@@ -28,5 +28,6 @@ This skill for Claude, ChatGPT, etc. provides deep instructions for development 
 6. Requirement to provide a complete, versioned script with each iteration
 7. Deployment instructions
 8. Logging guidance (places a `.log` file for each version in `%TEMP%`)
+9. Context (from Bentley's example scripts) for Civil content
 
 Review the SKILL.md and make organization-specific changes as necessary. A `.yaml` file is included under an `agents` subfolder for use with OpenAI.  
