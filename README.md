@@ -20,7 +20,7 @@ The tool allows the user to select a "source" element from which to inherit Item
 #### v023 Updates (2026-11-19)
 1. UX/UI changes
 2. Dialog persists after target assignment
-3. Item Type properties can be selectively applied to targets
+3. Item Types can be selectively applied to targets
 
 #### v024 Updates (2026-11-23)
 1. Rebuild with PyQt5 for improved clarity of Item Type selection
