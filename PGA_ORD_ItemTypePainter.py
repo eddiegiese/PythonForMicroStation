@@ -1,13 +1,19 @@
 # ================================================================
-# PGA ORD ITEM TYPE PAINTER - v0.23
+# PGA ORD ITEM TYPE PAINTER - v0.24
 #
 # TWO-PASS ITEM TYPE WRITE BUILD
 #
 # PURPOSE
 # -------
 # Read all attached Item Types and primitive Item Type properties from one
-# source element, display them in a Tk UI, then graphically select target
+# source element, display them in a PyQt5 UI, then graphically select target
 # elements and copy the source metadata to those targets.
+#
+# v0.24 PYQT5 REVIEW DIALOG
+# -------------------------
+# The review, source pick, and target pick UI uses one persistent PyQt5
+# dialog. Item Type rows have a 34-pixel size hint; property rows use 22 pixels.
+# The MSPy picker and two-pass Item Type write path remain in place.
 #
 # v0.23 STANDARD TREE TEXT
 # -----------------------
@@ -271,15 +277,15 @@ import ctypes
 import os
 import tempfile
 import time
-import tkinter as tk
-from tkinter import ttk, messagebox
+import sys
+from PyQt5 import QtCore, QtWidgets
 
 
 # ================================================================
 # CONSTANTS
 # ================================================================
 
-SCRIPT_TITLE = "PGA Item Type Painter - v0.23"
+SCRIPT_TITLE = "PGA Item Type Painter - v0.24"
 
 TARGET_PICK_TOOL_ID = 9219
 
@@ -287,6 +293,20 @@ MAX_PROMPT_ERROR_LENGTH = 180
 
 MICROSTATION_PUMP_MS = 20
 SOURCE_SELECTION_POLL_MS = 120
+
+
+_QT_APP = None
+
+
+def get_qt_application():
+    """Returns one QApplication for this ORD session."""
+    global _QT_APP
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        app = QtWidgets.QApplication(sys.argv[:1])
+        _QT_APP = app
+    app.setQuitOnLastWindowClosed(False)
+    return app
 
 
 # ================================================================
@@ -302,10 +322,8 @@ def _msg_error(title, text):
         )
     except Exception:
         try:
-            messagebox.showerror(
-                str(title),
-                str(text),
-            )
+            get_qt_application()
+            QtWidgets.QMessageBox.critical(None, str(title), str(text))
         except Exception:
             print(f"{title}: {text}")
 
@@ -572,8 +590,8 @@ def show_completion_dialog(
     """
     Show a real modal popup with an OK button.
 
-    Use the Windows MessageBox API instead of creating another Tk root or
-    Tk mainloop from the post-tool cleanup callback.
+    Use the Windows MessageBox API without starting another GUI event loop
+    from the post-tool cleanup callback.
     """
     item_type_count = int(
         item_type_count
@@ -617,18 +635,8 @@ def show_completion_dialog(
 
         # Fallback only. Normal production path on Windows uses MessageBoxW.
         try:
-
-            root = tk.Tk()
-            root.withdraw()
-
-            messagebox.showinfo(
-                SCRIPT_TITLE,
-                message,
-                parent=root,
-            )
-
-            root.destroy()
-
+            get_qt_application()
+            QtWidgets.QMessageBox.information(None, SCRIPT_TITLE, message)
         except Exception:
             print(message)
 
@@ -685,7 +693,7 @@ def _api_result_failed(result):
 
 WRITE_LOG_PATH = os.path.join(
     tempfile.gettempdir(),
-    "PGA_ORD_ItemTypePainter_v023.log",
+    "PGA_ORD_ItemTypePainter_v024.log",
 )
 
 
@@ -697,7 +705,7 @@ def _reset_write_log():
             encoding="utf-8",
         ) as log:
             log.write(
-                "PGA Item Type Painter v0.23 write log\n"
+                "PGA Item Type Painter v0.24 write log\n"
             )
             log.write(
                 time.strftime(
@@ -2382,481 +2390,115 @@ class ItemTypeTargetPickTool(DgnElementSetTool):
 
 
 # ================================================================
-# TK REVIEW UI
+# PYQT5 REVIEW UI
 # ================================================================
 
-class ItemTypePainterDialog:
+class ItemTypePainterDialog(QtWidgets.QDialog):
+    """Persistent PyQt5 review dialog for source and target selection."""
 
-    def __init__(
-        self,
-        source_snapshot=None,
-    ):
-
+    def __init__(self, source_snapshot=None):
+        get_qt_application()
+        super().__init__(None)
         self.source_snapshot = source_snapshot
-        self.action = None
-
         self.source_pick_active = False
         self.target_pick_active = False
-        self.source_poll_after_id = None
-        self.microstation_pump_after_id = None
-        self._last_source_selection_count = None
         self.dialog_closed = False
-        self._saved_geometry = None
-        self._drag_start = None
         self.selected_item_indices = set()
-        self.item_row_indices = {}
+        self._last_source_selection_count = None
+        self._saved_position = None
+        self._event_loop = None
+        self._loading_tree = False
 
-        self.root = tk.Tk()
+        self.setWindowTitle(SCRIPT_TITLE)
+        self.setWindowFlag(QtCore.Qt.WindowContextHelpButtonHint, False)
+        self.setMinimumSize(630, 500)
+        self.resize(680, 620)
 
-        self.root.title(
-            SCRIPT_TITLE
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(10)
+
+        source_group = QtWidgets.QGroupBox("Step 1. Select Source Element")
+        source_layout = QtWidgets.QGridLayout(source_group)
+        source_layout.addWidget(QtWidgets.QLabel("Element ID:"), 0, 0)
+        self.source_id_label = QtWidgets.QLabel("None")
+        source_font = self.source_id_label.font()
+        source_font.setBold(True)
+        self.source_id_label.setFont(source_font)
+        source_layout.addWidget(self.source_id_label, 0, 1)
+        source_layout.setColumnStretch(1, 1)
+        self.source_button = QtWidgets.QPushButton("Select Source Element")
+        self.source_button.clicked.connect(self.toggle_source_pick)
+        source_layout.addWidget(self.source_button, 0, 2)
+        source_hint = QtWidgets.QLabel(
+            "Click the button, then select exactly one source element in MicroStation/OpenRoads."
         )
+        source_hint.setWordWrap(True)
+        source_layout.addWidget(source_hint, 1, 0, 1, 3)
+        outer.addWidget(source_group)
 
-        self.root.resizable(
-            True,
-            True,
+        property_group = QtWidgets.QGroupBox("Step 2. Select Item Types and Verify Values")
+        property_layout = QtWidgets.QVBoxLayout(property_group)
+        selection_bar = QtWidgets.QHBoxLayout()
+        selection_bar.addWidget(QtWidgets.QLabel(
+            "Toggle an 'Apply' checkbox to include or exclude an Item Type."
+        ))
+        selection_bar.addStretch(1)
+        select_all_button = QtWidgets.QPushButton("Select all")
+        select_all_button.clicked.connect(self.select_all_item_types)
+        selection_bar.addWidget(select_all_button)
+        clear_all_button = QtWidgets.QPushButton("Clear all")
+        clear_all_button.clicked.connect(self.clear_all_item_types)
+        selection_bar.addWidget(clear_all_button)
+        property_layout.addLayout(selection_bar)
+
+        self.tree = QtWidgets.QTreeWidget()
+        self.tree.setColumnCount(3)
+        self.tree.setHeaderLabels(["Item Type / Property", "Value", "Apply"])
+        self.tree.setColumnWidth(0, 300)
+        self.tree.setColumnWidth(1, 200)
+        self.tree.setColumnWidth(2, 75)
+        self.tree.setUniformRowHeights(False)
+        self.tree.setRootIsDecorated(True)
+        self.tree.itemChanged.connect(self._on_item_changed)
+        property_layout.addWidget(self.tree, 1)
+        outer.addWidget(property_group, 1)
+
+        assign_group = QtWidgets.QGroupBox(
+            "Step 3. Assign Item Types and Values to Other Elements"
         )
-
-        self.root.columnconfigure(
-            0,
-            weight=1,
+        assign_layout = QtWidgets.QHBoxLayout(assign_group)
+        instruction = QtWidgets.QLabel(
+            "Click 'Assign to Target Elements'.<br>"
+            "Select one or more elements (Left-click).<br>"
+            "Reset (Right-click) to accept."
         )
+        instruction.setWordWrap(True)
+        assign_layout.addWidget(instruction, 1)
+        self.assign_button = QtWidgets.QPushButton("Assign to Target Elements")
+        self.assign_button.clicked.connect(self.assign_targets)
+        assign_layout.addWidget(self.assign_button)
+        outer.addWidget(assign_group)
 
-        self.root.rowconfigure(
-            0,
-            weight=1,
-        )
+        footer = QtWidgets.QHBoxLayout()
+        self.status_label = QtWidgets.QLabel()
+        self.status_label.setWordWrap(True)
+        footer.addWidget(self.status_label, 1)
+        close_button = QtWidgets.QPushButton("Close")
+        close_button.clicked.connect(self.close)
+        footer.addWidget(close_button)
+        outer.addLayout(footer)
 
-        outer = ttk.Frame(
-            self.root,
-            padding=12,
-        )
-
-        outer.grid(
-            row=0,
-            column=0,
-            sticky="nsew",
-        )
-
-        outer.columnconfigure(
-            0,
-            weight=1,
-        )
-
-        outer.rowconfigure(
-            2,
-            weight=1,
-        )
-
-        move_handle = ttk.Label(
-            outer,
-            text="Drag to move",
-            cursor="fleur",
-        )
-        move_handle.grid(row=0, column=0, sticky="e")
-        move_handle.bind("<ButtonPress-1>", self._start_drag)
-        move_handle.bind("<B1-Motion>", self._drag_dialog)
-        move_handle.bind("<ButtonRelease-1>", self._end_drag)
-
-        # --------------------------------------------------------
-        # SOURCE
-        # --------------------------------------------------------
-
-        source_frame = ttk.LabelFrame(
-            outer,
-            text="Step 1. Select Source Element",
-            padding=10,
-        )
-
-        source_frame.grid(
-            row=1,
-            column=0,
-            sticky="ew",
-        )
-
-        source_frame.columnconfigure(
-            1,
-            weight=1,
-        )
-
-        ttk.Label(
-            source_frame,
-            text="Element ID:",
-        ).grid(
-            row=0,
-            column=0,
-            sticky="w",
-            padx=(0, 8),
-        )
-
-        self.source_id_var = tk.StringVar(
-            value="None"
-        )
-
-        ttk.Label(
-            source_frame,
-            textvariable=self.source_id_var,
-            font=("", 10, "bold"),
-        ).grid(
-            row=0,
-            column=1,
-            sticky="w",
-        )
-
-        self.source_button = ttk.Button(
-            source_frame,
-            text="Select Source Element",
-            command=self.toggle_source_pick,
-            width=30,
-        )
-
-        self.source_button.grid(
-            row=0,
-            column=2,
-            sticky="e",
-            padx=(12, 0),
-        )
-
-        ttk.Label(
-            source_frame,
-            text=(
-                "Select exactly one source element "
-                "graphically in MicroStation/OpenRoads."
-            ),
-            wraplength=630,
-        ).grid(
-            row=1,
-            column=0,
-            columnspan=3,
-            sticky="w",
-            pady=(8, 0),
-        )
-
-        # --------------------------------------------------------
-        # ITEM TYPE TREE
-        # --------------------------------------------------------
-
-        property_frame = ttk.LabelFrame(
-            outer,
-            text="Step 2. Select Item Types and Verify Values",
-            padding=8,
-        )
-
-        property_frame.grid(
-            row=2,
-            column=0,
-            sticky="nsew",
-            pady=(10, 0),
-        )
-
-        property_frame.columnconfigure(
-            0,
-            weight=1,
-        )
-
-        property_frame.rowconfigure(
-            1,
-            weight=1,
-        )
-
-        selection_bar = ttk.Frame(property_frame)
-        selection_bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        selection_bar.columnconfigure(0, weight=1)
-        ttk.Label(
-            selection_bar,
-            text="Click an Apply box to include or exclude an Item Type.",
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Button(
-            selection_bar,
-            text="Select all",
-            command=self.select_all_item_types,
-            width=10,
-        ).grid(row=0, column=1, padx=(8, 4))
-        ttk.Button(
-            selection_bar,
-            text="Clear all",
-            command=self.clear_all_item_types,
-            width=10,
-        ).grid(row=0, column=2)
-
-        tree_frame = ttk.Frame(
-            property_frame
-        )
-
-        tree_frame.grid(
-            row=1,
-            column=0,
-            sticky="nsew",
-        )
-
-        tree_frame.columnconfigure(
-            0,
-            weight=1,
-        )
-
-        tree_frame.rowconfigure(
-            0,
-            weight=1,
-        )
-
-        self.tree = ttk.Treeview(
-            tree_frame,
-            columns=(
-                "value",
-                "apply",
-            ),
-            show="tree headings",
-            height=17,
-        )
-
-        self.tree.heading(
-            "#0",
-            text="Item Type / Property",
-        )
-
-        self.tree.heading(
-            "value",
-            text="Value",
-        )
-
-        self.tree.heading(
-            "apply",
-            text="Apply",
-        )
-
-        self.tree.column(
-            "#0",
-            width=300,
-            minwidth=180,
-            stretch=True,
-        )
-
-        self.tree.column(
-            "value",
-            width=200,
-            minwidth=120,
-            stretch=True,
-        )
-
-        self.tree.column(
-            "apply",
-            width=75,
-            minwidth=75,
-            stretch=False,
-            anchor="center",
-        )
-
-        self.tree.grid(
-            row=0,
-            column=0,
-            sticky="nsew",
-        )
-
-        yscroll = ttk.Scrollbar(
-            tree_frame,
-            orient="vertical",
-            command=self.tree.yview,
-        )
-
-        yscroll.grid(
-            row=0,
-            column=1,
-            sticky="ns",
-        )
-
-        xscroll = ttk.Scrollbar(
-            tree_frame,
-            orient="horizontal",
-            command=self.tree.xview,
-        )
-
-        xscroll.grid(
-            row=1,
-            column=0,
-            sticky="ew",
-        )
-
-        self.tree.configure(
-            yscrollcommand=yscroll.set,
-            xscrollcommand=xscroll.set,
-        )
-        self.tree.bind("<Button-1>", self._toggle_item_type_from_click, add="+")
-        self.tree.bind("<space>", self._toggle_focused_item_type, add="+")
-
-        # --------------------------------------------------------
-        # TARGET ASSIGNMENT
-        # --------------------------------------------------------
-
-        assign_frame = ttk.LabelFrame(
-            outer,
-            text="Step 3. Assign Item Types and Values to Other Elements",
-            padding=10,
-        )
-
-        assign_frame.grid(
-            row=3,
-            column=0,
-            sticky="ew",
-            pady=(10, 0),
-        )
-
-        assign_frame.columnconfigure(0, weight=1)
-
-        instruction = ttk.Frame(assign_frame)
-        instruction.grid(row=0, column=0, sticky="w")
-
-        ttk.Label(
-            instruction,
-            text="Select one or more elements (Left-click).",
-        ).grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Label(
-            instruction,
-            text="Reset (Right-click) to accept.",
-        ).grid(row=1, column=0, columnspan=3, sticky="w")
-
-        self.assign_button = ttk.Button(
-            assign_frame,
-            text="Assign to Target Elements",
-            command=self.assign_targets,
-            state="disabled",
-            width=30,
-        )
-        self.assign_button.grid(
-            row=0,
-            column=1,
-            sticky="e",
-            padx=(12, 0),
-        )
-
-        # --------------------------------------------------------
-        # STATUS / CLOSE
-        # --------------------------------------------------------
-
-        footer = ttk.Frame(
-            outer
-        )
-
-        footer.grid(
-            row=4,
-            column=0,
-            sticky="ew",
-            pady=(10, 0),
-        )
-
-        footer.columnconfigure(
-            0,
-            weight=1,
-        )
-
-        self.status_var = tk.StringVar(
-            value=(
-                "Click 'Pick / Re-Pick Source Element', then select one "
-                "source element in MicroStation. ESC to Cancel."
-            )
-        )
-
-        ttk.Label(
-            footer,
-            textvariable=self.status_var,
-            wraplength=600,
-        ).grid(
-            row=0,
-            column=0,
-            sticky="w",
-            padx=(0, 12),
-        )
-
-        ttk.Button(
-            footer,
-            text="Close",
-            command=self.close,
-            width=12,
-        ).grid(
-            row=0,
-            column=1,
-            sticky="e",
-        )
-
-        self.root.protocol(
-            "WM_DELETE_WINDOW",
-            self.close,
-        )
-
-        self.root.bind_all(
-            "<Escape>",
-            self.close_from_escape,
-        )
-
-        try:
-            self.root.minsize(
-                630,
-                500,
-            )
-        except Exception:
-            pass
-
+        self._pump_timer = QtCore.QTimer(self)
+        self._pump_timer.setInterval(MICROSTATION_PUMP_MS)
+        self._pump_timer.timeout.connect(self._pump_microstation_once)
+        self._source_timer = QtCore.QTimer(self)
+        self._source_timer.setInterval(SOURCE_SELECTION_POLL_MS)
+        self._source_timer.timeout.connect(self._poll_source_selection)
         self.refresh_source_display()
 
-        # Bentley GUI integration pattern: keep MicroStation's native input
-        # loop serviced while Tk owns the UI event loop.
-        self._schedule_microstation_pump()
-
-
-    def _start_drag(self, event):
-        """Records the pointer and window position at the start of a drag."""
-        self._drag_start = (
-            event.x_root,
-            event.y_root,
-            self.root.winfo_x(),
-            self.root.winfo_y(),
-        )
-
-
-    def _drag_dialog(self, event):
-        """Moves the dialog with the pointer while the handle is held."""
-        if self._drag_start is None:
-            return
-        pointer_x, pointer_y, window_x, window_y = self._drag_start
-        new_x = window_x + event.x_root - pointer_x
-        new_y = window_y + event.y_root - pointer_y
-        self.root.geometry(f"+{new_x}+{new_y}")
-
-
-    def _end_drag(self, event):
-        """Ends the drag and retains the moved position."""
-        self._drag_start = None
-
-
-    def _minimize_for_pick(self):
-        """Saves the current position before minimizing for element picking."""
-        self._saved_geometry = self.root.wm_geometry()
-        self.root.iconify()
-
-
-    def _restore_after_pick(self):
-        """Returns the dialog to the position it held before picking."""
-        self.root.deiconify()
-        if self._saved_geometry is not None:
-            self.root.geometry(self._saved_geometry)
-        self.root.lift()
-        self.root.focus_force()
-
-
-    # ------------------------------------------------------------
-    # SOURCE DISPLAY
-    # ------------------------------------------------------------
-
-    def clear_tree(self):
-
-        for iid in self.tree.get_children():
-            self.tree.delete(
-                iid
-            )
-        self.item_row_indices.clear()
-
-
     def _selected_snapshot(self):
-        """Returns only the Item Types selected for the next target run."""
+        """Returns only the selected Item Types for one target run."""
         if not self.source_snapshot:
             return None
         items = self.source_snapshot.get("items", [])
@@ -2866,70 +2508,53 @@ class ItemTypePainterDialog:
                       if index in self.selected_item_indices],
         }
 
-
     def _update_item_type_selection(self, update_status=True):
-        """Updates the Apply boxes and target button from the current choices."""
-        for row_id, index in self.item_row_indices.items():
-            self.tree.set(
-                row_id,
-                "apply",
-                "\u2611" if index in self.selected_item_indices else "\u2610",
-            )
-
-        selected_snapshot = self._selected_snapshot()
-        ready = source_snapshot_is_assignable(selected_snapshot)
-        self.assign_button.configure(
-            state="normal" if ready and not self.source_pick_active
-            and not self.target_pick_active else "disabled"
+        """Keeps the checkboxes, button, and status aligned with the selection."""
+        self._loading_tree = True
+        try:
+            for index in range(self.tree.topLevelItemCount()):
+                row = self.tree.topLevelItem(index)
+                if row.data(0, QtCore.Qt.UserRole) is None:
+                    continue
+                state = (QtCore.Qt.Checked if index in self.selected_item_indices
+                         else QtCore.Qt.Unchecked)
+                row.setCheckState(2, state)
+        finally:
+            self._loading_tree = False
+        ready = source_snapshot_is_assignable(self._selected_snapshot())
+        self.assign_button.setEnabled(
+            ready and not self.source_pick_active and not self.target_pick_active
         )
         if not update_status or not self.source_snapshot:
             return
-        total = len(self.source_snapshot.get("items", []))
         selected = len(self.selected_item_indices)
+        total = len(self.source_snapshot.get("items", []))
         if selected == 0:
-            self.status_var.set("Select at least one Item Type to assign.")
+            self.status_label.setText("Toggle on at least one Item Type.")
         elif not ready:
-            self.status_var.set(
+            self.status_label.setText(
                 "A selected Item Type could not be resolved. Clear its Apply box to continue."
             )
         else:
-            self.status_var.set(
+            self.status_label.setText(
                 f"Ready: {selected} of {total} Item Type(s) selected for assignment."
             )
 
-
-    def _toggle_item_type_from_click(self, event):
-        """Toggles an Item Type when its Apply box is clicked."""
-        if self.source_pick_active or self.target_pick_active:
+    def _on_item_changed(self, row, column):
+        """Updates the selected Item Types when an Apply box changes."""
+        if self._loading_tree or column != 2:
             return
-        if self.tree.identify_region(event.x, event.y) != "cell":
-            return
-        if self.tree.identify_column(event.x) != "#2":
-            return
-        row_id = self.tree.identify_row(event.y)
-        index = self.item_row_indices.get(row_id)
+        index = row.data(0, QtCore.Qt.UserRole)
         if index is None:
             return
-        if index in self.selected_item_indices:
-            self.selected_item_indices.remove(index)
-        else:
-            self.selected_item_indices.add(index)
-        self._update_item_type_selection()
-
-
-    def _toggle_focused_item_type(self, event):
-        """Toggles the focused Item Type with the Space key."""
         if self.source_pick_active or self.target_pick_active:
-            return "break"
-        index = self.item_row_indices.get(self.tree.focus())
-        if index is not None:
-            if index in self.selected_item_indices:
-                self.selected_item_indices.remove(index)
-            else:
-                self.selected_item_indices.add(index)
-            self._update_item_type_selection()
-        return "break"
-
+            self._update_item_type_selection(update_status=False)
+            return
+        if row.checkState(2) == QtCore.Qt.Checked:
+            self.selected_item_indices.add(index)
+        else:
+            self.selected_item_indices.discard(index)
+        self._update_item_type_selection()
 
     def select_all_item_types(self):
         """Selects every Item Type on the current source element."""
@@ -2938,7 +2563,6 @@ class ItemTypePainterDialog:
         self.selected_item_indices = set(range(len(self.source_snapshot.get("items", []))))
         self._update_item_type_selection()
 
-
     def clear_all_item_types(self):
         """Clears every Item Type selection on the current source element."""
         if self.source_pick_active or self.target_pick_active:
@@ -2946,579 +2570,236 @@ class ItemTypePainterDialog:
         self.selected_item_indices.clear()
         self._update_item_type_selection()
 
-
     def refresh_source_display(self):
-
-        self.clear_tree()
-
+        """Shows the current source, with all its Item Types selected."""
+        self._loading_tree = True
+        self.tree.clear()
+        self.selected_item_indices.clear()
         snapshot = self.source_snapshot
-        self.selected_item_indices = set()
-
         if not snapshot:
-
-            self.source_id_var.set(
-                "None"
+            self.source_id_label.setText("None")
+            QtWidgets.QTreeWidgetItem(self.tree, ["(No source element selected)", "", ""])
+            self.assign_button.setEnabled(False)
+            self.status_label.setText(
+                "Click 'Select Source Element', then select one source element in MicroStation."
             )
-
-            self.tree.insert(
-                "",
-                "end",
-                text="(No source element selected)",
-                values=(
-                    "",
-                    "",
-                ),
-            )
-
-            self.assign_button.configure(
-                state="disabled"
-            )
-
-            if not self.source_pick_active:
-
-                self.status_var.set(
-                    "Click 'Pick / Re-Pick Source Element', then select one "
-                    "source element in MicroStation."
-                )
-
+            self._loading_tree = False
             return
 
-        self.source_id_var.set(
-            str(
-                snapshot.get(
-                    "source_element_id",
-                    "Unknown",
-                )
-            )
-        )
-
-        items = snapshot.get(
-            "items",
-            [],
-        )
+        self.source_id_label.setText(str(snapshot.get("source_element_id", "Unknown")))
+        items = snapshot.get("items", [])
         self.selected_item_indices = set(range(len(items)))
-
         if not items:
-
-            self.tree.insert(
-                "",
-                "end",
-                text="(No Item Types attached to source element)",
-                values=(
-                    "",
-                    "",
-                ),
+            QtWidgets.QTreeWidgetItem(
+                self.tree, ["(No Item Types attached to source element)", "", ""]
             )
-
-            self.assign_button.configure(
-                state="disabled"
-            )
-
-            self.status_var.set(
-                "The selected source has no attached Item Types."
-            )
-
+            self.assign_button.setEnabled(False)
+            self.status_label.setText("The selected source has no attached Item Types.")
+            self._loading_tree = False
             return
 
         for index, item in enumerate(items):
-
-            item_text = (
+            name = (
                 f"{item.get('display_item', '(unknown Item Type)')} "
                 f"[{item.get('display_library', '(unknown library)')}]"
             )
-
-            parent = self.tree.insert(
-                "",
-                "end",
-                text=item_text,
-                values=(
-                    "",
-                    "\u2611",
-                ),
-                open=True,
-            )
-            self.item_row_indices[parent] = index
-
-            rows = item.get(
-                "display_rows",
-                [],
-            )
-
+            parent = QtWidgets.QTreeWidgetItem(self.tree, [name, "", ""])
+            parent.setFlags(parent.flags() | QtCore.Qt.ItemIsUserCheckable)
+            parent.setCheckState(2, QtCore.Qt.Checked)
+            parent.setSizeHint(0, QtCore.QSize(0, 34))
+            parent.setExpanded(True)
+            parent.setData(0, QtCore.Qt.UserRole, index)
+            rows = item.get("display_rows", [])
             if not rows:
-
-                self.tree.insert(
-                    parent,
-                    "end",
-                    text="(No primitive properties)",
-                    values=(
-                        "",
-                        "",
-                    ),
-                )
-
+                child = QtWidgets.QTreeWidgetItem(parent, ["(No primitive properties)", "", ""])
+                child.setSizeHint(0, QtCore.QSize(0, 22))
             else:
-
                 for row in rows:
-
-                    self.tree.insert(
+                    child = QtWidgets.QTreeWidgetItem(
                         parent,
-                        "end",
-                        text=row.get(
-                            "access",
-                            "(unnamed property)",
-                        ),
-                        values=(
-                            row.get(
-                                "value",
-                                "",
-                            ),
-                            "",
-                        ),
+                        [str(row.get("access", "(unnamed property)")),
+                         str(row.get("value", "")), ""],
                     )
-
+                    child.setSizeHint(0, QtCore.QSize(0, 22))
             if not item.get("ready"):
-
-                self.tree.insert(
+                child = QtWidgets.QTreeWidgetItem(
                     parent,
-                    "end",
-                    text="Assignment preparation issue",
-                    values=(
-                        "Item Type definition could not be resolved "
-                        "in the active DGN file.",
-                        "",
-                    ),
+                    ["Assignment preparation issue",
+                     "Item Type definition could not be resolved in the active DGN file.", ""],
                 )
-
+                child.setSizeHint(0, QtCore.QSize(0, 22))
+        self._loading_tree = False
         self._update_item_type_selection()
 
-
-    # ------------------------------------------------------------
-    # COOPERATIVE MICROSTATION / TK EVENT LOOP
-    # ------------------------------------------------------------
-
-    def _schedule_microstation_pump(self):
-
-        if self.dialog_closed:
-            return
-
-        if self.microstation_pump_after_id is not None:
-            return
-
-        try:
-
-            self.microstation_pump_after_id = self.root.after(
-                MICROSTATION_PUMP_MS,
-                self._pump_microstation_once,
-            )
-
-        except Exception:
-
-            self.microstation_pump_after_id = None
-
-
     def _pump_microstation_once(self):
-        """
-        Service MicroStation's native input/event loop while Tk's mainloop
-        remains active.
-
-        Bentley GUI integration samples use PythonMainLoop() from their GUI
-        timer so MicroStation input is not starved by the external UI loop.
-        """
-        self.microstation_pump_after_id = None
-
+        """Services native MicroStation input while the Qt dialog runs."""
         if self.dialog_closed:
             return
-
-        if self._drag_start is not None:
-            self._schedule_microstation_pump()
-            return
-
         try:
-
             PyCadInputQueue.PythonMainLoop()
-
         except Exception as ex:
-
-            _write_log(
-                "MICROSTATION PUMP | PythonMainLoop exception | "
-                +
-                str(ex)
-            )
-
-        self._schedule_microstation_pump()
-
-
-    # ------------------------------------------------------------
-    # SOURCE PICKING THROUGH NORMAL SELECTION SET
-    # ------------------------------------------------------------
+            _write_log("MICROSTATION PUMP | PythonMainLoop exception | " + str(ex))
 
     def toggle_source_pick(self):
-
+        """Starts or cancels native source selection."""
         if self.source_pick_active:
             self.cancel_source_pick()
         else:
             self.begin_source_pick()
 
+    def _hide_for_pick(self):
+        """Preserves the dialog position while MicroStation receives picks."""
+        self._saved_position = self.pos()
+        self.hide()
+
+    def _restore_after_pick(self):
+        """Shows the dialog where the user last placed it."""
+        if self.dialog_closed:
+            return
+        if self._saved_position is not None:
+            self.move(self._saved_position)
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def begin_source_pick(self):
-        """
-        Begin source selection with MicroStation's NATIVE Element Selection
-        command. No custom DgnElementSetTool is installed.
-        """
+        """Starts MicroStation's normal single-element selection command."""
         if self.source_pick_active or self.target_pick_active:
             return
-
         try:
             SelectionSetManager.GetManager().EmptyAll()
         except Exception:
             pass
-
         self.source_pick_active = True
-
-        self.source_button.configure(
-            text="Cancel Source Pick"
-        )
-
-        self.assign_button.configure(
-            state="disabled"
-        )
-
-        self.status_var.set(
+        self.source_button.setText("Cancel Source Pick")
+        self.assign_button.setEnabled(False)
+        self.status_label.setText(
             "Source pick active: select exactly ONE element in MicroStation."
         )
-
-        _write_log(
-            "SOURCE PICK | begin | cooperative MicroStation pump active"
-        )
-
+        _write_log("SOURCE PICK | begin | cooperative MicroStation pump active")
         try:
-
             start_native_single_element_selection()
-
         except Exception as ex:
-
             self.source_pick_active = False
-
-            self.source_button.configure(
-                text="Pick / Re-Pick Source Element"
+            self.source_button.setText("Select Source Element")
+            self.status_label.setText(
+                "Could not start MicroStation Element Selection: " + _short_error(ex)
             )
-
-            self.status_var.set(
-                "Could not start MicroStation Element Selection: "
-                +
-                _short_error(ex)
-            )
-
-            _write_log(
-                "SOURCE PICK | native selector failed | "
-                +
-                str(ex)
-            )
-
+            _write_log("SOURCE PICK | native selector failed | " + str(ex))
+            self._update_item_type_selection(update_status=False)
             return
-
-        # Minimize the Tk dialog so it cannot physically obstruct the view.
-        # Tk's event loop remains alive so SelectionSet polling continues.
-        try:
-            self._minimize_for_pick()
-        except Exception:
-            pass
-
+        self._hide_for_pick()
         _prompt(
             "Item Type Painter: Select ONE SOURCE element. "
             "MicroStation Element Selection is active."
         )
-
-        self._schedule_source_poll()
-
-
-
-    def _schedule_source_poll(self):
-
-        if not self.source_pick_active:
-            return
-
-        try:
-
-            self.source_poll_after_id = self.root.after(
-                SOURCE_SELECTION_POLL_MS,
-                self._poll_source_selection,
-            )
-
-        except Exception:
-
-            self.source_poll_after_id = None
-
+        self._source_timer.start()
 
     def _poll_source_selection(self):
-        """
-        Poll only MicroStation's ordinary SelectionSet.
-
-        No DgnElementSetTool is installed here. This preserves the working
-        target-selection architecture from v0.10.
-        """
-        self.source_poll_after_id = None
-
+        """Reads the ordinary SelectionSet until one source is captured."""
         if not self.source_pick_active:
+            self._source_timer.stop()
             return
-
         try:
-
             sel_mgr = SelectionSetManager.GetManager()
-
-            count = int(
-                sel_mgr.NumSelected()
-            )
-
+            count = int(sel_mgr.NumSelected())
             if count != self._last_source_selection_count:
-
-                _write_log(
-                    f"SOURCE PICK | SelectionSet count={count}"
-                )
-
+                _write_log(f"SOURCE PICK | SelectionSet count={count}")
                 self._last_source_selection_count = count
-
         except Exception as ex:
-
-            self.cancel_source_pick(
-                restore_status=False
+            self.cancel_source_pick(restore_status=False)
+            self.status_label.setText(
+                "Could not read MicroStation's SelectionSet: " + str(ex)
             )
-
-            self.status_var.set(
-                "Could not read MicroStation's SelectionSet: "
-                +
-                str(ex)
-            )
-
             return
-
         if count <= 0:
-
-            self._schedule_source_poll()
-
             return
-
         if count != 1:
-
             try:
                 sel_mgr.EmptyAll()
-            except Exception:
-                pass
-
-            self._last_source_selection_count = 0
-
-            try:
                 start_native_single_element_selection()
             except Exception:
                 pass
-
-            self.status_var.set(
-                f"{count} elements were selected. "
-                "Select exactly ONE source element."
+            self._last_source_selection_count = 0
+            self.status_label.setText(
+                f"{count} elements were selected. Select exactly ONE source element."
             )
-
             _prompt(
                 "Item Type Painter: Multiple source elements were selected. "
                 "Selection cleared; pick exactly ONE source element."
             )
-
-            self._schedule_source_poll()
-
             return
-
         try:
-
-            snapshot = (
-                get_source_snapshot_from_selection()
-            )
-
+            snapshot = get_source_snapshot_from_selection()
         except Exception as ex:
-
             try:
                 sel_mgr.EmptyAll()
-            except Exception:
-                pass
-
-            self._last_source_selection_count = 0
-
-            try:
                 start_native_single_element_selection()
             except Exception:
                 pass
-
-            self.status_var.set(
-                "Could not interrogate the selected source: "
-                +
-                _short_error(ex)
+            self._last_source_selection_count = 0
+            self.status_label.setText(
+                "Could not interrogate the selected source: " + _short_error(ex)
             )
-
-            _prompt(
-                "Item Type Painter: Source interrogation failed - "
-                +
-                _short_error(ex)
-            )
-
-            self._schedule_source_poll()
-
+            _prompt("Item Type Painter: Source interrogation failed - " + _short_error(ex))
             return
-
-        # Successful source capture.
         self.source_snapshot = snapshot
         self.source_pick_active = False
-
-        self.source_button.configure(
-            text="Pick / Re-Pick Source Element"
-        )
-
+        self._source_timer.stop()
+        self.source_button.setText("Select Source Element")
         try:
             sel_mgr.EmptyAll()
         except Exception:
             pass
-
         return_to_default_command()
-
-        try:
-            self._restore_after_pick()
-        except Exception:
-            pass
-
+        self._restore_after_pick()
         _write_log(
-            f"SOURCE CAPTURE | element="
-            f"{snapshot.get('source_element_id', 'Unknown')} | "
+            f"SOURCE CAPTURE | element={snapshot.get('source_element_id', 'Unknown')} | "
             f"item_types={len(snapshot.get('items', []))}"
         )
-
         _prompt(
             f"Item Type Painter: Source element "
             f"{snapshot.get('source_element_id', 'Unknown')} captured."
         )
-
         self.refresh_source_display()
 
-
-
-    def cancel_source_pick(
-        self,
-        restore_status=True,
-    ):
-
-        if self.source_poll_after_id is not None:
-
-            try:
-                self.root.after_cancel(
-                    self.source_poll_after_id
-                )
-            except Exception:
-                pass
-
-            self.source_poll_after_id = None
-
+    def cancel_source_pick(self, restore_status=True):
+        """Cancels source selection and returns to the review dialog."""
+        self._source_timer.stop()
         self.source_pick_active = False
-
         try:
             SelectionSetManager.GetManager().EmptyAll()
         except Exception:
             pass
-
         return_to_default_command()
-
-        try:
-            self._restore_after_pick()
-        except Exception:
-            pass
-
-        try:
-            self.source_button.configure(
-                text="Pick / Re-Pick Source Element"
-            )
-        except Exception:
-            pass
-
+        self._restore_after_pick()
+        self.source_button.setText("Select Source Element")
         self._update_item_type_selection(update_status=False)
-
         if restore_status:
-
             if self.source_snapshot is not None:
-                self.refresh_source_display()
+                self._update_item_type_selection()
             else:
-                self.status_var.set(
-                    "Source picking canceled. "
-                    "Click 'Pick / Re-Pick Source Element' to try again."
+                self.status_label.setText(
+                    "Source picking canceled. Click 'Select Source Element' to try again."
                 )
-
-        _prompt(
-            "Item Type Painter: Source picking canceled."
-        )
-
-
-    # ------------------------------------------------------------
-    # DIALOG ACTIONS
-    # ------------------------------------------------------------
-
-    def _finish(
-        self,
-        action,
-    ):
-
-        if self.source_pick_active:
-
-            self.cancel_source_pick(
-                restore_status=False
-            )
-
-        self.dialog_closed = True
-        self.action = action
-
-        if self.source_poll_after_id is not None:
-
-            try:
-                self.root.after_cancel(
-                    self.source_poll_after_id
-                )
-            except Exception:
-                pass
-
-            self.source_poll_after_id = None
-
-        if self.microstation_pump_after_id is not None:
-
-            try:
-                self.root.after_cancel(
-                    self.microstation_pump_after_id
-                )
-            except Exception:
-                pass
-
-            self.microstation_pump_after_id = None
-
-        try:
-            self.root.unbind_all(
-                "<Escape>"
-            )
-        except Exception:
-            pass
-
-        try:
-            self.root.destroy()
-        except Exception:
-            pass
-
+        _prompt("Item Type Painter: Source picking canceled.")
 
     def assign_targets(self):
-        """Starts one target assignment while keeping this dialog alive."""
+        """Starts one target run without closing the review dialog."""
         if self.dialog_closed or self.source_pick_active or self.target_pick_active:
             return
         selected_snapshot = self._selected_snapshot()
         if not source_snapshot_is_assignable(selected_snapshot):
             self._update_item_type_selection()
             return
-
         self.target_pick_active = True
-        self.assign_button.configure(state="disabled")
-        self.source_button.configure(state="disabled")
-        self.status_var.set("Select target elements in MicroStation; right-click to accept.")
+        self.assign_button.setEnabled(False)
+        self.source_button.setEnabled(False)
+        self.status_label.setText(
+            "Select target elements in MicroStation; right-click to accept."
+        )
         try:
-            self._minimize_for_pick()
+            self._hide_for_pick()
             clear_picker_highlights(None)
             controller = TargetAssignmentController(selected_snapshot, self)
             TargetAssignmentController.s_instance = controller
@@ -3532,45 +2813,51 @@ class ItemTypePainterDialog:
             TargetAssignmentController.s_instance = None
             clear_picker_highlights(None)
             return_to_default_command()
-            self.on_target_pick_finished("Could not start target selection: " + _short_error(ex))
+            self.on_target_pick_finished(
+                "Could not start target selection: " + _short_error(ex)
+            )
             _msg_error(SCRIPT_TITLE, "Could not start target selection:\n" + str(ex))
 
     def on_target_pick_finished(self, status):
-        """Restores the dialog after the native picker and assignment finish."""
+        """Restores source and target controls after one target run."""
         if self.dialog_closed:
             return
         self.target_pick_active = False
-        self.source_button.configure(state="normal")
+        self.source_button.setEnabled(True)
         self._update_item_type_selection(update_status=False)
-        self.status_var.set(status)
+        self.status_label.setText(status)
         self._restore_after_pick()
 
-
-    def close_from_escape(
-        self,
-        event=None,
-    ):
-
+    def reject(self):
+        """Uses Escape to cancel source picking or close the dialog."""
         if self.source_pick_active:
-
             self.cancel_source_pick()
+        else:
+            self.close()
 
-            return
-
-        self.close()
-
-
-    def close(self):
+    def closeEvent(self, event):
+        """Closes the dialog only when the native target picker is idle."""
         if self.target_pick_active:
-            self.status_var.set("Finish or cancel target selection in MicroStation before closing.")
+            self.status_label.setText(
+                "Finish or cancel target selection in MicroStation before closing."
+            )
+            event.ignore()
             return
-        self._finish(None)
+        if self.source_pick_active:
+            self.cancel_source_pick(restore_status=False)
+        self.dialog_closed = True
+        self._source_timer.stop()
+        self._pump_timer.stop()
+        event.accept()
+        if self._event_loop is not None:
+            self._event_loop.quit()
 
-
-    def show(self):
-        """Runs the review dialog until the user closes it."""
-        self.root.mainloop()
-
+    def run(self):
+        """Runs a local Qt event loop until the user closes the dialog."""
+        self._event_loop = QtCore.QEventLoop(self)
+        self._pump_timer.start()
+        self.show()
+        self._event_loop.exec_()
 
 
 # ================================================================
@@ -3598,7 +2885,7 @@ class TargetAssignmentController:
         self.restore_queued = True
         TargetAssignmentController.s_instance = None
         if not self.dialog.dialog_closed:
-            self.dialog.root.after(0, lambda: self.dialog.on_target_pick_finished(status))
+            QtCore.QTimer.singleShot(0, lambda: self.dialog.on_target_pick_finished(status))
 
     def on_callback_failure(self, error):
         """Restores the dialog if a post-cleanup step raises unexpectedly."""
@@ -3769,7 +3056,7 @@ class TargetAssignmentController:
 def main():
 
     _reset_write_log()
-    _write_log("SCRIPT START | cooperative Tk/MicroStation pump")
+    _write_log("SCRIPT START | cooperative Qt/MicroStation pump")
 
     try:
         get_active_context()
@@ -3815,10 +3102,10 @@ def main():
 
         source_snapshot = None
 
-    # Keep Tk alive for repeated source and target selection cycles.
+    # Keep one nonmodal Qt dialog alive for repeated source and target runs.
     # The native target picker still cleans up before its callback writes EC data.
     dialog = ItemTypePainterDialog(source_snapshot)
-    dialog.show()
+    dialog.run()
     clear_picker_highlights(None)
     return_to_default_command()
     _prompt("Item Type Painter closed.")
