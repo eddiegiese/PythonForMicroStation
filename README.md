@@ -10,7 +10,7 @@ Tools can be initiated via the **Python Manager** tool within MicroStation or vi
 
 ## Custom Tools
 ### Item Type Painter
-This is a UI-based script that relies on `MSPy` and `tkinter` libraries. 
+This is a UI-based script that relies on `MSPy` and `PyQt5` libraries. 
 The tool allows the user to select a "source" element from which to inherit Item Types, Item Type properties, and their values. This information is then displayed in the UI. The user can then assign the full extent of all Item Types from the source element to one or more "target" elements. This functionality is non-native to MicroStation, but highly desired when working with Item Types. 
 
 ![Item Type Painter Screenshot](./assets/ItemTypePainter.png)
@@ -22,6 +22,9 @@ The tool allows the user to select a "source" element from which to inherit Item
 2. Dialog persists after target assignment
 3. Item Type properties can be selectively applied to targets
 
+#### v024 Updates (2026-11-23)
+1. Rebuild with PyQt5 for improved clarity of Item Type selection
+2. UX/UI changes
 
 ## AI Skill: microstation-python-expert
 This skill for Claude, ChatGPT, etc. provides deep instructions for development and handling of Python for MicroStation when vibe-coding. Key highlights include:
